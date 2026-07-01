@@ -46,6 +46,18 @@ struct Args {
     /// Tap movement threshold in raw coordinate units
     #[arg(long, default_value_t = 20)]
     tap_move_threshold: i32,
+
+    /// Enable two-finger scrolling in the inner zone
+    #[arg(long, default_value_t = false)]
+    two_finger_scroll: bool,
+
+    /// Two-finger scroll sensitivity (REL_WHEEL ticks per raw unit of movement)
+    #[arg(long, default_value_t = 0.05)]
+    two_finger_sensitivity: f64,
+
+    /// Use natural scrolling for two-finger scroll (finger down = content down)
+    #[arg(long, default_value_t = false)]
+    natural_scroll: bool,
 }
 
 // ABS event codes (not all are in evdev's typed enums)
@@ -198,6 +210,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tap_move_threshold = args.tap_move_threshold;
     let mut tap_states: [TapState; 5] = std::array::from_fn(|_| TapState::default());
 
+    let two_finger_scroll_enabled = args.two_finger_scroll;
+    let two_finger_sensitivity = args.two_finger_sensitivity;
+    let mut two_finger_prev_x: Option<f64> = None;
+    let mut two_finger_prev_y: Option<f64> = None;
+    let mut two_finger_scroll_accum_y: f64 = 0.0;
+    let mut two_finger_scroll_accum_x: f64 = 0.0;
+    let mut two_finger_detent_carry_y: i32 = 0;
+    let mut two_finger_detent_carry_x: i32 = 0;
+
     loop {
         for event in dev.fetch_events()? {
             let etype = event.event_type();
@@ -262,6 +283,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     prev_y = None;
                                     scroll_accumulator = 0.0;
                                     detent_carry = 0;
+                                    two_finger_prev_x = None;
+                                    two_finger_prev_y = None;
+                                    two_finger_scroll_accum_y = 0.0;
+                                    two_finger_scroll_accum_x = 0.0;
+                                    two_finger_detent_carry_y = 0;
+                                    two_finger_detent_carry_x = 0;
                                     tap_states[0] = TapState::default();
                                     tap_states[1] = TapState::default();
                                 } else if current_slot == 1 {
@@ -294,6 +321,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                     tap_states[1] = TapState::default();
+                                    // If the second finger lifts, leave two-finger
+                                    // scroll mode so slot 0 resumes pointer movement.
+                                    two_finger_prev_x = None;
+                                    two_finger_prev_y = None;
+                                    two_finger_scroll_accum_y = 0.0;
+                                    two_finger_scroll_accum_x = 0.0;
+                                    two_finger_detent_carry_y = 0;
+                                    two_finger_detent_carry_x = 0;
                                 }
                             } else if current_slot < tap_states.len() {
                                 // Finger down
@@ -350,6 +385,90 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 tap_states[slot_idx].has_moved = true;
                             }
                         }
+                    }
+
+                    // Two-finger scroll: when both slots 0 and 1 are active and
+                    // the primary finger started in the inner zone, translate the
+                    // averaged finger movement into REL_WHEEL/REL_HWHEEL events.
+                    let s0_down = slots[0].tracking_id != -1;
+                    let s1_down = slots[1].tracking_id != -1;
+                    if two_finger_scroll_enabled
+                        && s0_down
+                        && s1_down
+                        && locked_zone == Some(Zone::Inner)
+                    {
+                        let avg_x = (slots[0].x + slots[1].x) as f64 / 2.0;
+                        let avg_y = (slots[0].y + slots[1].y) as f64 / 2.0;
+
+                        let mut events_out: Vec<InputEvent> = Vec::new();
+
+                        if let (Some(px), Some(py)) = (two_finger_prev_x, two_finger_prev_y) {
+                            let dx = avg_x - px;
+                            let dy = avg_y - py;
+
+                            // Default is traditional scrolling (finger down -> scroll down).
+                            // With --natural-scroll, finger direction follows the content.
+                            let scroll_dir = if args.natural_scroll { 1.0 } else { -1.0 };
+
+                            // Vertical scroll.
+                            two_finger_scroll_accum_y +=
+                                dy * two_finger_sensitivity * 120.0 * scroll_dir;
+                            let hires_y = two_finger_scroll_accum_y.trunc() as i32;
+                            if hires_y != 0 {
+                                two_finger_scroll_accum_y -= hires_y as f64;
+                                events_out.push(InputEvent::new(
+                                    EventType::RELATIVE,
+                                    RelativeAxisType::REL_WHEEL_HI_RES.0,
+                                    hires_y,
+                                ));
+
+                                two_finger_detent_carry_y += hires_y;
+                                let detents_y = two_finger_detent_carry_y / 120;
+                                if detents_y != 0 {
+                                    two_finger_detent_carry_y -= detents_y * 120;
+                                    events_out.push(InputEvent::new(
+                                        EventType::RELATIVE,
+                                        RelativeAxisType::REL_WHEEL.0,
+                                        detents_y,
+                                    ));
+                                }
+                            }
+
+                            // Horizontal scroll.
+                            two_finger_scroll_accum_x +=
+                                dx * two_finger_sensitivity * 120.0 * scroll_dir;
+                            let hires_x = two_finger_scroll_accum_x.trunc() as i32;
+                            if hires_x != 0 {
+                                two_finger_scroll_accum_x -= hires_x as f64;
+                                events_out.push(InputEvent::new(
+                                    EventType::RELATIVE,
+                                    RelativeAxisType::REL_HWHEEL_HI_RES.0,
+                                    hires_x,
+                                ));
+
+                                two_finger_detent_carry_x += hires_x;
+                                let detents_x = two_finger_detent_carry_x / 120;
+                                if detents_x != 0 {
+                                    two_finger_detent_carry_x -= detents_x * 120;
+                                    events_out.push(InputEvent::new(
+                                        EventType::RELATIVE,
+                                        RelativeAxisType::REL_HWHEEL.0,
+                                        detents_x,
+                                    ));
+                                }
+                            }
+                        }
+
+                        two_finger_prev_x = Some(avg_x);
+                        two_finger_prev_y = Some(avg_y);
+
+                        if !events_out.is_empty() {
+                            vdev.emit(&events_out)?;
+                        }
+
+                        // Pointer movement and ring scroll are suppressed while
+                        // two-finger scrolling is active.
+                        continue;
                     }
 
                     // On SYN_REPORT, process the primary finger (slot 0)

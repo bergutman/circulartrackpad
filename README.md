@@ -73,6 +73,10 @@ circulartrackpad [OPTIONS]
       --tap-timeout <MS>   Tap timeout in milliseconds [default: 180]
       --tap-move-threshold <UNITS>
                            Tap movement threshold in raw coordinate units [default: 20]
+      --two-finger-scroll  Enable two-finger scrolling in the inner zone
+      --two-finger-sensitivity <SENS>
+                           Two-finger scroll sensitivity [default: 0.05]
+      --natural-scroll     Use natural scrolling for two-finger scroll
 ```
 
 By default the daemon auto-detects the Panasonic trackpad by its reported name
@@ -88,6 +92,13 @@ inner zone emits a left button click, and a quick two-finger tap emits a
 right button click. Use `--no-tap` to disable this, or adjust the
 `--tap-timeout` and `--tap-move-threshold` if you find taps are being
 missed or triggered accidentally.
+
+Two-finger scrolling is available behind `--two-finger-scroll`. With it
+enabled, placing two fingers in the inner zone and moving them together
+emits vertical/horizontal wheel events, while the outer ring still
+produces circular scroll events. Adjust `--two-finger-sensitivity` if
+the scroll feels too fast or slow. Add `--natural-scroll` to make the
+content follow your finger direction instead of the scrollbar.
 
 ### Running at login
 
@@ -133,6 +144,10 @@ In addition, because the daemon exclusively grabs the real touchpad,
 tap-to-click is implemented in userspace: a short, single-finger touch in
 the inner zone synthesizes `BTN_LEFT`, and a short two-finger touch
 synthesizes `BTN_RIGHT`.
+
+When `--two-finger-scroll` is enabled, two fingers in the inner zone are
+averaged and their movement is translated into `REL_WHEEL`/
+`REL_HWHEEL` events, leaving the ring zone free for circular scrolling.
 
 ## License
 
