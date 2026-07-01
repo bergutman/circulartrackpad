@@ -64,12 +64,16 @@ revoked on logout.
 ```
 circulartrackpad [OPTIONS]
 
-  -d, --device <DEVICE>    Input device path [default: /dev/input/event3]
+  -d, --device <DEVICE>    Input device path [default: auto-detect]
   -p, --pointer <POINTER>  Pointer sensitivity multiplier [default: 1.5]
   -s, --scroll <SCROLL>    Scroll ticks per radian of ring rotation [default: 5]
   -r, --ring <RING>        Ring threshold as fraction of max radius [default: 0.65]
   -i, --invert-scroll      Invert scroll direction
 ```
+
+By default the daemon auto-detects the Panasonic trackpad by its reported name
+(`Synaptics TM3562-003`). You only need `-d` if your trackpad shows up under a
+different name or you want to use an explicit event node.
 
 Touch the inner area to move the pointer; slide your finger around the
 outer ring to scroll. Lower `--ring` values make the ring zone wider

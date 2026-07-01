@@ -2,8 +2,10 @@ use clap::Parser;
 use evdev::uinput::VirtualDeviceBuilder;
 use evdev::{AttributeSet, Device, EventType, InputEvent, Key, RelativeAxisType};
 use std::f64::consts::PI;
+use std::path::PathBuf;
 
 // -- Trackpad geometry (from evtest: ABS_X/ABS_Y range 0..528) --
+const TRACKPAD_NAME: &str = "Synaptics TM3562-003";
 const PAD_MAX: f64 = 528.0;
 const CENTER_X: f64 = PAD_MAX / 2.0;
 const CENTER_Y: f64 = PAD_MAX / 2.0;
@@ -12,9 +14,9 @@ const MAX_RADIUS: f64 = PAD_MAX / 2.0;
 #[derive(Parser, Debug)]
 #[command(about = "Userspace daemon for the Panasonic Let's Note circular trackpad")]
 struct Args {
-    /// Input device path
-    #[arg(short, long, default_value = "/dev/input/event3")]
-    device: String,
+    /// Input device path [default: auto-detect]
+    #[arg(short, long)]
+    device: Option<String>,
 
     /// Pointer sensitivity (multiplier on raw ABS deltas)
     #[arg(short, long, default_value_t = 1.5)]
@@ -84,13 +86,47 @@ fn angle_delta(prev: f64, curr: f64) -> f64 {
     d
 }
 
+fn find_trackpad() -> Option<PathBuf> {
+    for (path, dev) in evdev::enumerate() {
+        if dev.name().map(|n| n == TRACKPAD_NAME).unwrap_or(false) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn list_input_devices() -> Vec<(PathBuf, Option<String>)> {
+    evdev::enumerate()
+        .map(|(path, dev)| (path, dev.name().map(|s| s.to_string())))
+        .collect()
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let ring_threshold = MAX_RADIUS * args.ring;
     let scroll_sign = if args.invert_scroll { 1.0 } else { -1.0 };
 
-    println!("circulartrackpad: opening {}", args.device);
-    let mut dev = Device::open(&args.device)?;
+    let device_path = match &args.device {
+        Some(path) => PathBuf::from(path),
+        None => find_trackpad().ok_or_else(|| {
+            let mut msg = format!(
+                "Could not auto-detect '{}' trackpad.\n\nAvailable input devices:\n",
+                TRACKPAD_NAME
+            );
+            for (path, name) in list_input_devices() {
+                msg.push_str(&format!(
+                    "  {}  {}\n",
+                    path.display(),
+                    name.as_deref().unwrap_or("(no name)")
+                ));
+            }
+            msg.push_str("\nPass the correct node explicitly with -d /dev/input/eventN.");
+            msg
+        })?,
+    };
+
+    println!("circulartrackpad: opening {}", device_path.display());
+    let mut dev = Device::open(&device_path)?;
     println!(
         "circulartrackpad: grabbed '{}' (pointer={}, scroll={}, ring={})",
         dev.name().unwrap_or("unknown"),
@@ -216,8 +252,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 // REL_WHEEL only when crossing a full detent
                                 // (for apps that don't consume HI_RES).
                                 let delta = angle_delta(pa, angle);
-                                scroll_accumulator +=
-                                    delta * args.scroll * 120.0 * scroll_sign;
+                                scroll_accumulator += delta * args.scroll * 120.0 * scroll_sign;
 
                                 let hires = scroll_accumulator.trunc() as i32;
                                 if hires != 0 {
